@@ -1,0 +1,157 @@
+---
+title: "Final Report"
+author: "Team 12"
+format: html
+author:
+  - Anika Kathuria
+  - Qiaoyang Lin
+  - Yixin Xiao
+  - Han Choi
+  - Raymond Li
+---
+
+# 1. Data Collection and Preparation
+
+In this project, we are designing and conducting an A/B Test experiment. A/B Test plays an important role in data science, especially for decision-making and user experience optimization. The idea behind A/B Testing is you have two group–A and B, and Group A is the original version and Group B is the modified version. You are comparing how each group behaves. By comparing the outcome for Group A and Group B, you will find out which one is better for you to use.
+
+Research question: Does red color for sales affect people's choice of buying clothes?
+
+Motivations: In a world filled with countless choices, marketing strategies—such as those used during major sales events like Black Friday—are crafted to influence consumer decisions. It is interesting to see the consistent use of the color red in advertisements across different countries. This widespread practice raises a compelling question: does the color red actually increase urgency in consumer behavior, encouraging quicker or more impulsive purchases?
+
+We began by constructing a large-scale video dataset using the YouTube Data API v3. Our scraping pipeline was designed in Python and supported keyword-based queries centered around five major climate-related themes: “climate change”, “global warming”, “climate crisis”, “climate action”, and “carbon emissions”. Each term was queried to the maximum paginated limit of 500 results per API session, generating a total of 2,143 unique video IDs across a three-day scraping period.
+
+Each video query retrieved details from the API’s `snippet`, `statistics`, and `contentDetails` endpoints. These fields included the title, description, tags, publish date, duration, like and comment counts, among others. We further enriched the dataset by querying each associated channel’s statistics, such as subscriber count, total uploads, and lifetime view counts. Our final raw dataset contained 26 variables.
+
+In the cleaning phase, we removed two malformed duration strings, normalized all text fields to UTF-8, and converted ISO-8601 durations into seconds. Numeric fields with missing values, such as comment counts for videos with comments disabled, were filled with zeros. We also created a derived field, `days_since_upload`, based on the difference between the scraping date and video publish date. The output file, `cleaned_data.csv`, stored 2568 entries.
+
+![](cleaned_data.png)
+
+# 2. Exploratory Data Analysis
+
+The initial analysis of the raw YouTube climate video dataset began with a comprehensive data cleaning phase. The team first evaluated the extent of missing data, identifying notable gaps in the `description` field (approximately 5.5% of records) and the `duration` field. To preserve data consistency, missing descriptions were imputed as empty strings, and a binary indicator variable (`has_description`) was created to capture whether a video had textual metadata or not. One record with a null duration was removed to maintain temporal integrity in subsequent time-based analyses.
+
+![](evaluate missing data.png)
+
+A key preprocessing step involved parsing the ISO 8601 duration format (e.g., `PT8M4S`) into a numeric format. A custom regex-based parser transformed these strings into `duration_seconds`, allowing for consistent analysis across video lengths. Simultaneously, timestamps from the `published_at` field were standardized and decomposed into `publish_day`, `publish_hour`, and `publish_month` to facilitate time-series and seasonal analyses.
+
+Another variable that required transformation was `tags`, which was originally stored as a stringified Python list. The notebook used `ast.literal_eval()` to parse this structure and then compute a count of tags per video. The new variable, `tag_count`, became a proxy for the descriptive richness of each video.
+
+Quality control measures included the removal of videos with zero `view_count` or those from channels with zero reported uploads. These were deemed likely anomalies or placeholders. Duplicate entries based on the `video_id` were also dropped.
+
+Text fields, especially `description`, were cleaned via regular expressions to remove URLs, HTML fragments, and extraneous whitespace. This cleaned version (`description_clean`) was optimized for later NLP operations.
+
+To begin the exploratory phase, we examined the distribution and relationships between core engagement metrics: \`view_count\`, \`like_count\`, and \`comment_count\`. These features are foundational in understanding user interaction with climate-related YouTube videos.
+
+![](Distributon of View Count.png)
+
+Each of these histograms displays an extreme right-skew, confirming that a small subset of videos garners disproportionately high engagement, while the majority receive relatively little. This heavy-tailed behavior highlights the need for transformation. To mitigate skewness and ensure model robustness, we later applied log-transformations to these variables during preprocessing.
+
+![](Feature Correlation Matrix.png)
+
+The correlation heatmap reveals strong linear relationships among the three engagement metrics. Specifically, \`view_count\` and \`like_count\` share a Pearson correlation of 0.85, and \`like_count\` and \`comment_count\` follow closely at 0.83. These correlations are intuitive—popular videos tend to be liked and commented on more frequently. In contrast, variables such as \`tag_count\` and \`duration_seconds\` showed negligible correlation with engagement, indicating limited predictive power in their raw form.
+
+![](Average views by hour of day.png)
+
+We observed notable patterns when grouping videos by upload hour. Videos posted between 1–3 AM and 6–7 PM UTC achieved the highest average views. These hours may align with high viewer availability in different global time zones or user browsing behavior in the early morning or late evening. However, the large standard deviation bars suggest that a few viral videos significantly inflated the mean. To address this, we considered applying median-based aggregations or trimming top percentiles in further analysis.
+
+![](Average views by day of the week.png)
+
+Weekly trends showed that videos uploaded on Mondays had the highest average views, followed by Saturdays. Content uploaded from Tuesday to Friday showed relatively flat performance. This suggests a possible "start of the week" effect or weekend recap consumption trend. These insights informed the creation of cyclical time encodings and binary flags for weekends and Mondays.
+
+![](View Count by Number of Tags Used.png)
+
+The relationship between \`tag_count\` and \`view_count\` was explored through a log-scaled boxplot. While using more tags generally correlated with higher view counts—likely due to improved discoverability through YouTube’s algorithm—this benefit plateaued beyond 30 tags. Overuse of tags (40–60) often resulted in poor or inconsistent performance, possibly due to irrelevant keywords or attempts at SEO manipulation. These findings guided us to use tag count as a capped numeric feature and inspired additional engineered variables, such as binary indicators for “dense tagging.”
+
+![](Video Clusters by Text Content (t-SNE).png)
+
+To uncover thematic patterns in video content, we combined each video’s \`title\` and \`description\` into a single text field and applied TF-IDF vectorization followed by K-means clustering (k=5). The resulting clusters were projected into 2D using t-SNE for visualization. Clusters were manually interpreted based on top TF-IDF terms per group:
+
+Cluster 0 focused on science and policy, with top terms like "greenhouse," "global," and "model." Cluster 1 emphasized carbon and emissions reduction efforts. Cluster 2 contained breaking news and climate alerts. Cluster 3 captured educational posters and campaigns. Cluster 4 centered on action and TED-style messages.
+
+This unsupervised textual grouping added interpretability and thematic richness to our dataset. We encoded each cluster as a categorical feature to be used in downstream modeling.
+
+# 3. Feature Engineering and Preprocessing
+
+Our preprocessing pipeline addressed both structural issues in the raw dataset and transformations needed to prepare for modeling. Given the highly skewed nature of engagement data, our primary focus was on transforming variables to reduce heteroskedasticity, enriching semantic signals from textual metadata, and generating interpretable boolean or ratio-based features that enhanced predictive performance.
+
+![](Original vs Log-Trans View Count.png)
+
+The first step involved addressing extreme right-skew in raw engagement features — `view_count`, `like_count`, and `comment_count`. These metrics exhibited long-tailed behavior, which violates normality assumptions and risks overweighting outliers. We applied a log1p transformation (log(1 + x)) to these features, which compresses the scale of high values while preserving rank order and interpretability. After transformation, the variables became more symmetric and manageable for both linear models and tree-based learners.
+
+The histograms before and after transformation clearly demonstrate the shift from exponential-like distributions to bell-shaped ones. These transformed versions were later used as both inputs and target variables during model development.
+
+![](Feature Engineering.png)
+
+Text features were another rich source of variation in our dataset. To harness this, we created several features from the video titles. The `title_sentiment` score captures the emotional valence of a title using a polarity score ranging from -1 (very negative) to +1 (very positive).
+
+We also created binary indicators:
+
+-    `is_clickbait`: identifies if the title contains exaggerated or promotional language based on curated phrases.
+
+-   `has_number`: detects if the title includes numbers (e.g., “10 Tips to Reduce Emissions”).
+
+-    `has_punctuation`: flags punctuation like "!", "?" or ellipses which often denote excitement or suspense.
+
+These features reflect both stylistic and emotional qualities of video titles — attributes known to affect user engagement.
+
+# 4. Modeling and Evaluation
+
+The core objective of our modeling task was to predict whether a YouTube video related to climate topics would receive high engagement, defined by a like-to-view ratio above the median threshold. This framed the problem as a binary classification task, where the target variable took a value of 1 for videos with above-median engagement and 0 otherwise. To construct this target, we computed `like_view_ratio = like_count / view_count` and used the median of this ratio to split the dataset. The final label distribution was nearly balanced, as visualized in the engagement label count plot, ensuring that the classifiers would not be biased toward any particular class.
+
+![](Distribution Engagement.png)
+
+We experimented with three supervised learning models: Logistic Regression (as an interpretable baseline), Random Forest, and XGBoost. All models were trained on an 80/20 stratified train-test split to maintain balance across the engagement classes. We evaluated model performance using multiple metrics, including accuracy, F1-score, recall, precision, and ROC AUC.
+
+| Model               | Accuracy | F1 Score | ROC AUC |
+|---------------------|----------|----------|---------|
+| Logistic Regression | 0.88     | 0.88     | 0.88    |
+| Random Forest       | 0.99     | 0.99     | 1.00    |
+| XGBoost             | 1.00     | 1.00     | 1.00    |
+
+![](Model Index.png)
+
+Initial results revealed that both Random Forest and XGBoost achieved perfect scores on the test set (accuracy = 1.0, F1 = 1.0, AUC = 1.0). While these metrics seemed impressive, their perfect performance raised concerns about overfitting due to the relatively modest test size and complex model structure. Their learning curves showed signs of variance inflation, and retraining revealed instability. In contrast, Logistic Regression achieved slightly lower scores (accuracy = 0.88, F1 = 0.88, AUC = 0.95), but demonstrated far more robust generalization and stability across folds, making it a more reliable choice for deployment. The confusion matrix for Logistic Regression showed balanced performance across both high and low engagement classes.
+
+![](Confusion Matrix.png)
+
+After model comparison, we selected Logistic Regression as our final model. Its performance, while slightly behind the ensemble models, was consistent and interpretable. We tuned the regularization parameter `C` via `GridSearchCV`, arriving at an optimal value of `C = 0.01`. This yielded the best trade-off between model simplicity and predictive power. Another advantage of Logistic Regression is that it maps coefficients directly to odds ratios, which facilitates communication of findings to non-technical stakeholders.
+
+![](ROC Curve Comparison.png)
+
+To deepen our understanding of feature importance, we applied SHAP (SHapley Additive exPlanations) analysis, particularly using XGBoost due to its compatibility with SHAP. The SHAP summary plot identified `like_view_ratio`, `comment_view_ratio`, and `duration_seconds` as the top predictors, followed by text-based features like `tag_count` and `title_sentiment`. This aligned with our expectations that content-driven and temporal features would play a significant role in engagement prediction. Interestingly, features such as `has_clickbait`, `publish_day`, and `is_holiday` had negligible influence, suggesting that behavioral patterns and video quality outweigh surface-level metadata in driving user interaction.
+
+![](SHAP SUMMARY PLOT.png)
+
+The SHAP dependence plot for `title_sentiment` further confirmed its limited effect on the model output, with values clustered around zero SHAP contribution across the sentiment spectrum. These insights underscore the interpretability and practical utility of our model, reinforcing our choice of Logistic Regression as the most balanced and reliable solution for predicting engagement on climate-related YouTube videos.
+
+![](SHAP DEPENDENCE PLOT.png)
+
+# 5. Discussion and Conclusion
+
+This study illustrates that the engagement levels of climate-related YouTube videos can be effectively predicted using a rich blend of structured features derived from video content, channel metadata, and publishing context. Through feature engineering and model experimentation, we discovered that emotionally positive titles, relevant keyword tags, strategic upload timing (especially Monday and early afternoon hours), and activist or scientific themes were key drivers of audience interaction. These findings were supported by strong correlations among engagement metrics and insights from SHAP values.
+
+Although advanced models such as Random Forest and XGBoost achieved perfect scores on cross-validation, their overfitting tendencies, as seen in the learning curves and lack of generalization, made them less suitable for practical deployment. We ultimately selected **Logistic Regression** as the final model due to its solid and stable performance (Accuracy = 0.6667), interpretability, and lower susceptibility to overfitting. The SHAP analysis confirmed that features like like/view ratio, comment/view ratio, duration, and semantic clusters significantly influenced predictions. Metadata attributes such as whether the title included numbers, punctuation, or had a positive tone also contributed meaningfully to engagement prediction.
+
+This project confirmed that a thoughtfully designed set of metadata and textual features could yield interpretable and actionable insights for content creators. Importantly, our modeling pipeline emphasized the balance between performance and explainability—a core consideration when providing strategic recommendations to creators.
+
+However, there are notable limitations to our study. First, the dataset was limited to English-language content, which may overlook regional or cultural factors influencing engagement. Second, potential biases may exist due to API truncation, and dislikes—previously a useful signal—are no longer publicly available. Finally, we did not explore non-linear interactions or richer language modeling beyond basic TF-IDF and cluster-based embeddings.
+
+Looking ahead, we propose the following future improvements:
+
+-    **Text Representation**: Integrate richer semantic features using transformer-based embeddings such as BERT or SentenceBERT to better capture nuanced language and sentiment.
+
+-    **Model Architecture**: Explore ensemble techniques and regularized models to improve performance while preserving robustness.
+
+-    **Data Expansion**: Collect a larger and more diverse multilingual dataset to broaden the model’s generalizability.
+
+-    **Deployment**: Develop a lightweight, interactive tool (e.g., Streamlit or Gradio) that enables creators to estimate engagement scores in real time.
+
+In summary, our project establishes a replicable and interpretable framework for predicting YouTube video engagement, with practical insights that could guide climate content creators in optimizing their reach and impact.
+
+# 6. Team Contributions
+
+Anika Kathuria built the initial scraper,resolved modeling conflicts, and performed early-stage EDA. Qiaoyang Lin focused on preprocessing and developing feature engineering strategies. Yixin Xiao implemented and validated the machine learning models and conducted SHAP analysis. Han Choi led the initial write-up and presentation slide design. Raymond Li wrote the final report, synthesized the final narrative, and integrated feedback from all team members.
+
+**Github Link:** <https://github.com/My990813/Applied-Data-Science-Project-Three>
+
+**Dashboard link:** <https://stat4243-final.streamlit.app/>
